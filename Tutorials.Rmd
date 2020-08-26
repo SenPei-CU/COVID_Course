@@ -1,0 +1,270 @@
+---
+title: "Tutorials on Infectious Disease Models"
+author: "Sen Pei"
+date: "8/25/2020"
+output:
+  html_document:
+    code_folding: hide
+    df_print: paged
+    toc: yes
+    toc_float: yes
+    theme: flatly
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## SIR model
+Variables: Total population $N$, susceptible population $S$, infected population $I$, recovered population $R$.
+
+Parameters: The transmission rate $\beta$, average infectious period $D$ days.
+
+Equations:
+
+\begin{eqnarray}
+  \frac{dS}{dt} &=& -\beta\frac{SI}{N},\\
+  \frac{dI}{dt} &=& \beta\frac{SI}{N}-\frac{I}{D},\\
+  \frac{dR}{dt} &=& \frac{I}{D}.
+\end{eqnarray}
+
+We use an Euler stepping scheme to discretize the equations and a Possion process to introduce stochasticity:
+
+\begin{eqnarray}
+  S(t+1) &=& S(t) - Pois(\beta\frac{S(t)I(t)}{N}),\\
+  I(t+1) &=& I(t) + Pois(\beta\frac{S(t)I(t)}{N}) - Pois(\frac{I(t)}{D}),\\
+  R(t+1) &=& R(t) + Pois(\frac{I(t)}{D}).\\
+\end{eqnarray}
+
+
+Function:
+
+```{r SIR}
+#SIR model
+SIR<-function(N, S, I, beta, D, tmstep){
+  #total popualtion: N; susceptible: S; infected: I; 
+  #transmission rate: beta; average infectious period: D
+  #simulation time: tmstep (days)
+  
+  #time series for susceptible, infected and newly infected population
+  S_rec = I_rec = R_rec = newI_rec = matrix(0, tmstep)
+  
+  for (t in 1:tmstep){
+    
+    Einf = min(rpois(1, (beta * I * S / N)), S) #new infection
+    Erecov = min(rpois(1, (I / D)), I) #new recover
+    
+    S = S - Einf
+    I = I + Einf - Erecov
+    R = N - S - I
+    
+    S_rec[t] = S
+    I_rec[t] = I
+    R_rec[t] = R
+    newI_rec[t] = Einf
+  
+  }
+  rec = data.frame(Date=1:tmstep, S=S_rec, I=I_rec, R=R_rec, newI=newI_rec)
+  rec
+}
+```
+
+Run a simulation:
+
+```{r SIR_sim}
+N = 1e5 #total population
+I = 100 #initial infected population
+S = N - I #initial susceptible population
+R = 0 #initial recovered population
+tmstep = 100 #simulation period (days)
+beta = 0.5 #transmission rate
+D = 4 #average infectious period
+
+SIRsim = SIR(N, S, I, beta, D, tmstep)
+
+```
+
+Plot results:
+
+```{r plot_SIR_sim, message = FALSE}
+library(ggplot2)
+Output <- reshape2::melt(SIRsim, id.var='Date')
+ggplot(Output, aes(x=Date, y=value, col=variable)) + geom_line()
+```
+
+Try different R0:
+
+```{r plot_SIR_sim_R0, message = FALSE}
+library(cowplot)
+R0=c(0.8,1.0,1.4,2)
+pltlst <- list()
+for(i in 1:4){
+  beta = R0[i]/D
+  SIRsim = SIR(N, S, I, beta, D, tmstep)
+  Output <- data.frame(Date=SIRsim$Date,newI=SIRsim$newI)
+  pltlst[[length(pltlst) + 1]]<-ggplot(Output, aes(x=Date, y=newI)) + geom_line() +
+    ggtitle(paste("R0=",toString(R0[i]),sep=""))
+}
+cowplot::plot_grid(plotlist = pltlst, ncol = 2, labels = "AUTO")
+```
+
+## Metapopulation model
+
+A 5-location metapopulation model:
+
+Variables: Total population in 5 locations $N=(10^5,10^5,10^5,10^5,10^5)^T$, susceptible population $S=(9.99\times10^4,10^5,10^5,10^5,10^5)^T$, infected population $I=(100,0,0,0,0)^T$, recovered population $R=(0,0,0,0,0)^T$.
+
+Parameters: The transmission rate $\beta=(0.4,0.4,0.4,0.4,0.4)^T$, average infectious period $D=4$ days.
+
+Human movement: $\mathbf{M}=\{M_{ij}\}_{5\times5}$, 
+
+$M_{ij}$ - human movement from location $j$ to $i$: $i\leftarrow j$. A one-dimensional chain:
+\begin{pmatrix}
+0 & 1000 & 0 & 0 & 0 \\ 
+1000 & 0 & 1000 & 0 & 0 \\ 
+0 & 1000 & 0 & 1000 & 0 \\ 
+0 & 0 & 1000 & 0 & 1000 \\ 
+0 & 0 & 0 & 1000 & 0 
+\end{pmatrix}
+
+Equations:
+
+\begin{eqnarray}
+  \frac{dS_i}{dt} &=& -\beta_i\frac{S_iI_i}{N_i}+\sum_j\frac{M_{ij}S_j}{N_j}-\sum_j\frac{M_{ji}S_i}{N_i},\\
+  \frac{dI_i}{dt} &=& \beta_i\frac{S_iI_i}{N_i}-\frac{I_i}{D}+\sum_j\frac{M_{ij}I_j}{N_j}-\sum_j\frac{M_{ji}I_i}{N_i},\\
+  \frac{dR_i}{dt} &=& \frac{I_i}{D}+\sum_j\frac{M_{ij}R_j}{N_j}-\sum_j\frac{M_{ji}R_i}{N_i}.
+\end{eqnarray}
+
+Function:
+
+```{r metaSIR}
+#metaSIR model
+metaSIR<-function(N, S, I, beta, D, M, tmstep){
+  #total popualtion: N; susceptible: S; infected: I; 
+  #transmission rate: beta; average infectious period: D
+  #M: mobility matrix
+  #simulation time: tmstep (days)
+  
+  num_loc = dim(M)[1] #number of locations
+  
+  #time series for susceptible, infected and newly infected population
+  S_rec = I_rec = R_rec = newI_rec = matrix(0,num_loc,tmstep)
+  #updated S I and R
+  Snew = Inew = Rnew = matrix(0,num_loc,1)
+  
+  for (t in 1:tmstep){
+    
+    for (i in 1:num_loc){
+      
+      Einf = min(rpois(1, (beta[i] * I[i] * S[i] / N[i])), S[i]) #new infection
+      Erecov = min(rpois(1, (I[i] / D)), I[i]) #new recover
+      
+      ESenter = 0 #S entering location i
+      ESleft = 0 #S leaving location i
+      EIenter = 0 #I entering location i
+      EIleft = 0 #I leaving location i
+      
+      for (j in 1:num_loc){
+        ESenter = ESenter + round(M[i,j]*S[j]/N[j])
+        ESleft = ESleft + round(M[j,i]*S[i]/N[i])
+        EIenter = EIenter + round(M[i,j]*I[j]/N[j])
+        EIleft = EIleft + round(M[j,i]*I[i]/N[i])
+      }
+      
+      Snew[i] = S[i] - Einf + ESenter - ESleft
+      Inew[i] = I[i] + Einf - Erecov + EIenter -EIleft
+      Rnew[i] = N[i] - Snew[i] - Inew[i]
+      
+      newI_rec[i,t] = Einf
+      
+    }
+    
+    S = Snew
+    I = Inew
+    R = Rnew
+    
+    S_rec[,t] = Snew
+    I_rec[,t] = Inew
+    R_rec[,t] = Rnew
+  
+  }
+  rec = list(Location=1:num_loc,Date=1:tmstep,S=S_rec,I=I_rec,R=R_rec,newI=newI_rec)
+  rec
+}
+```
+
+Run a simulation:
+
+```{r metaSIR_sim}
+N = matrix(1e5,5,1) #total population
+I = matrix(0,5,1) 
+I[1] = 100 #initial infected population
+S = N - I #initial susceptible population
+R = matrix(0,5,1) #initial recovered population
+tmstep = 100 #simulation period (days)
+num_loc = dim(N)[1]
+beta = matrix(0.4,5,1) #transmission rate
+D = 4 #average infectious period
+M = matrix(c(0,1000,0,0,0,1000,0,1000,0,0,0,1000,0,1000,0,0,0,1000,0,1000,0,0,0,1000,0),nrow=5,ncol=5,byrow=TRUE)
+
+metaSIRsim = metaSIR(N, S, I, beta, D, M, tmstep)
+
+```
+
+Plot results:
+
+```{r plot_metaSIR_sim}
+#set column and row names
+newI=metaSIRsim[["newI"]]
+dimnames(newI) = list(paste0('Location ',seq(1:num_loc)),1:tmstep)
+Output <- reshape2::melt(newI)
+Output <- data.frame(Output)
+colnames(Output) <- c("Location", "Date","value")
+ggplot(Output, aes(x=Date, y=value, col=Location)) + geom_line()
+```
+
+Change mobility: 10%, 100%, 500% and 1000%
+
+```{r plot_mestSIR_sim_M, message = FALSE}
+library(cowplot)
+k=c(0.1,1,5,10)
+pltlst <- list()
+for(i in 1:4){
+  Mcnt = k[i]*M
+  metaSIRsim = metaSIR(N, S, I, beta, D, Mcnt, tmstep)
+  newI=metaSIRsim[["newI"]]
+  dimnames(newI) = list(paste0('Location ',seq(1:num_loc)),1:tmstep)
+  Output <- reshape2::melt(newI)
+  Output <- data.frame(Output)
+  colnames(Output) <- c("Location", "Date","value")
+  pltlst[[length(pltlst) + 1]]<-ggplot(Output, aes(x=Date, y=value, col=Location)) + geom_line() +
+    ggtitle(paste("k=",toString(k[i]),sep=""))
+}
+cowplot::plot_grid(plotlist = pltlst, ncol = 2, labels = "AUTO")
+```
+
+
+Control in location 2: reduce $\beta$ by 10%, 30%, 50% and 90%
+
+```{r plot_mestSIR_sim_beta, message = FALSE}
+library(cowplot)
+k=c(0.9,0.7,0.5,0.1)
+pltlst <- list()
+for(i in 1:4){
+  betacnt=beta
+  betacnt[2] = betacnt[2]*k[i]
+  metaSIRsim = metaSIR(N, S, I, betacnt, D, M, tmstep)
+  newI=metaSIRsim[["newI"]]
+  dimnames(newI) = list(paste0('Location ',seq(1:num_loc)),1:tmstep)
+  Output <- reshape2::melt(newI)
+  Output <- data.frame(Output)
+  colnames(Output) <- c("Location", "Date","value")
+  pltlst[[length(pltlst) + 1]]<-ggplot(Output, aes(x=Date, y=value, col=Location)) + geom_line() +
+    ggtitle(paste("beta2*",toString(k[i]),sep=""))
+}
+cowplot::plot_grid(plotlist = pltlst, ncol = 2, labels = "AUTO")
+```
